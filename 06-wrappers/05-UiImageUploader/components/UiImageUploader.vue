@@ -2,7 +2,7 @@
   <div class="image-uploader">
     <label
       class="image-uploader__preview"
-      :style="{ '--bg-url': preview ? `url('${preview}')` : null }"
+      :style="{ '--bg-url': bgUrl ? `url('${bgUrl}')` : null }"
       :class="{ 'image-uploader__preview-loading': isLoading }"
     >
       <span class="image-uploader__text">{{ backgroundText }}</span>
@@ -20,12 +20,87 @@
 </template>
 
 <script>
+//
 // 'File' component from vuetifyjs: https://vuetifyjs.com/en/components/file-inputs/
+// v-model doesn't support 'file': https://stackoverflow.com/questions/64607995/v-model-directives-dont-support-input-type-file
+// "c:\fakepath\" + URL.createObjectURL: https://html.spec.whatwg.org/multipage/input.html#fakepath-srsly
+// updateImageDisplay: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/file#examples
+//
 
-const backgroundTexts = {
-  noImage: 'Загрузить изображение',
-  loading: 'Загрузка',
-  remove: 'Удалить изображение',
+const REMOVE_IMAGE_TEXT = 'Удалить изображение';
+const LOAD_IMAGE_TEXT = 'Загрузить изображение';
+const LOADING_TEXT = 'Загрузка...';
+
+const strategies = {
+  getInitialProps: (uploader, preview) => {
+    return {
+      strategy: uploader ? strategies.hasUploader : strategies.noUploader,
+      isLoading: false,
+      bgUrl: preview,
+    };
+  },
+
+  noUploader: {
+    getBackgroundText: (vm) => (vm.bgUrl ? REMOVE_IMAGE_TEXT : LOAD_IMAGE_TEXT),
+    handleInputClick: function (vm, event) {
+      if (vm.bgUrl || vm.$refs.fileInput.value) {
+        event.preventDefault();
+        vm.bgUrl = null;
+        vm.$refs.fileInput.value = null;
+        vm.$emit('remove', { image: null });
+      }
+    },
+    handleInputChange: (vm, event) => {
+      if (vm.$refs.fileInput.files.length !== 0) {
+        vm.bgUrl = URL.createObjectURL(vm.$refs.fileInput.files[0]);
+        vm.$emit('select', vm.$refs.fileInput.files[0]);
+      }
+    },
+  },
+
+  hasUploader: {
+    getBackgroundText: (vm) => {
+      if (vm.isLoading) {
+        return LOADING_TEXT;
+      }
+      if (vm.bgUrl) {
+        return REMOVE_IMAGE_TEXT;
+      }
+      return LOAD_IMAGE_TEXT;
+    },
+    handleInputClick: function (vm, event) {
+      if (vm.isLoading) {
+        event.preventDefault();
+        return;
+      }
+      if (vm.preview || vm.$refs.fileInput.value) {
+        event.preventDefault();
+        vm.bgUrl = null;
+        vm.$refs.fileInput.value = null;
+        const isLoading = vm.isLoading;
+        vm.isLoading = false;
+        if (!isLoading) {
+          // rise event after all internal operations are finished
+          vm.$emit('remove', { image: null });
+        }
+      }
+    },
+    handleInputChange: (vm, event) => {
+      vm.uploader(vm.$refs.fileInput.files[0]).then(
+        (successResult) => {
+          vm.isLoading = false;
+          vm.bgUrl = successResult.image;
+          vm.$emit('upload', successResult);
+        },
+        (errorResult) => {
+          vm.isLoading = false;
+          vm.$refs.fileInput.value = null;
+          vm.$emit('error', errorResult);
+        },
+      );
+      vm.isLoading = true;
+    },
+  },
 };
 
 export default {
@@ -46,20 +121,22 @@ export default {
   ],
 
   data() {
-    return {
-      isLoading: false,
-    };
+    return strategies.getInitialProps(this.uploader, this.preview);
   },
 
   computed: {
     backgroundText() {
-      if (this.isLoading) {
-        return backgroundTexts.loading;
-      } else if (this.preview) {
-        return backgroundTexts.remove;
-      }
-      return backgroundTexts.noImage;
+      return this.strategy.getBackgroundText(this);
     },
+  },
+
+  watch: {
+    // preview: function(newVal, oldVal) {
+    //   Object.assign(this.$data, strategies.getInitialProps(this.hasUploader, newVal));
+    // },
+    // uploader: function(newVal, oldVal) {
+    //   Object.assign(this.$data, strategies.getInitialProps(newVal, this.preview));
+    // },
   },
 
   methods: {
@@ -68,51 +145,14 @@ export default {
       // v-model doesn't support 'file': https://stackoverflow.com/questions/64607995/v-model-directives-dont-support-input-type-file
       // "c:\fakepath\" + URL.createObjectURL: https://html.spec.whatwg.org/multipage/input.html#fakepath-srsly
       // updateImageDisplay: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/file#examples
+      // https://stackoverflow.com/questions/12030686/html-input-file-selection-event-not-firing-upon-selecting-the-same-file
       //
-      const files = e.target.files || e.dataTransfer.files;
-      if (!files.length) {
-        return;
-      }
-      if (files.length > 1) {
-        throw Error('"files.length > 1" is not supported');
-      }
 
-      const newImageUrl = URL.createObjectURL(files[0]);
-
-      // Notify parent that there is a new value to receive it through 'preview' and show
-      // Otherwise, provide a reaction to new 'preview' value if it was changed in parent
-      // this.$emit('upload', { image: newImageUrl });
-      if (this.uploader) {
-        this.isLoading = true;
-        this.uploader(files[0]).then(
-          (successResult) => {
-            this.isLoading = false;
-            this.$emit('upload', { image: successResult.image });
-          },
-          (errorResult) => {
-            this.isLoading = false;
-            //console.log(errorResult);
-            this.$emit('error', errorResult);
-            this.$emit('select', { image: null });
-          },
-        );
-      }
-
-      this.$emit('select', { image: newImageUrl });
+      this.strategy.handleInputChange(this, e);
     },
 
-    handleInputClick(event) {
-      if (this.isLoading) {
-        event.preventDefault();
-      } else if (this.preview) {
-        //   https://stackoverflow.com/questions/12030686/html-input-file-selection-event-not-firing-upon-selecting-the-same-file
-
-        this.$refs.fileInput.value = null;
-        event.preventDefault();
-
-        this.$emit('upload', { image: null });
-        this.$emit('select', { image: null });
-      }
+    handleInputClick(e) {
+      this.strategy.handleInputClick(this, e);
     },
   },
 };
